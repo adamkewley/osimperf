@@ -5,8 +5,10 @@
 which opensim-cmd
 
 pushd Gait2354_Simbody/
-opensim-cmd run-tool subject01_Setup_InverseDynamics.xml
+cmd="opensim-cmd run-tool subject01_Setup_InverseDynamics.xml"
+valgrind --tool=callgrind -- ${cmd}
+perf record -- ${cmd}
 
-# cleanup
+# cleanup *run* artifacts (not perf measurements)
 rm -rf ResultsInverseDynamics/ err.log out.log
 popd

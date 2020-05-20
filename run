@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+# This assumes the caller has set the PATH to contain the
+# `opensim-cmd` that should be measured as top-prio
+which opensim-cmd
+
+pushd Gait2354_Simbody/
+opensim-cmd run-tool subject01_Setup_InverseDynamics.xml
+
+# cleanup
+rm -rf ResultsInverseDynamics/ err.log out.log
+popd

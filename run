@@ -1,14 +1,40 @@
 #!/usr/bin/env bash
 
+valgrind_opts="--tool=callgrind --dump-instr=yes --cache-sim=yes --branch-sim=yes"
+perf_opts="--freq 8192"
+
+function run_bench() {
+    cmd=$1
+    valgrind ${valgrind_opts} -- ${cmd}
+    perf record ${perf_opts} -- ${cmd}
+}
+
+function ik() {
+    pushd Gait2354_Simbody/
+    run_bench "opensim-cmd run-tool subject01_Setup_InverseDynamics.xml"
+
+    # cleanup *run* artifacts (not perf measurements)
+    rm -rf ResultsInverseDynamics/ err.log out.log
+    popd
+}
+
+function fd() {
+    pushd ToyDropLanding/
+    run_bench "opensim-cmd run-tool setup_forward_tool.xml"
+
+    # cleanup *run* artifacts (not perf measurements)
+    rm -rf '\\forward' err.log out.log perf.data.old
+    popd
+}
+
 # This assumes the caller has set the PATH to contain the
 # `opensim-cmd` that should be measured as top-prio
 which opensim-cmd
 
-pushd Gait2354_Simbody/
-cmd="opensim-cmd run-tool subject01_Setup_InverseDynamics.xml"
-valgrind --tool=callgrind --dump-instr=yes  -- ${cmd}
-perf record --freq 8192 --call-graph dwarf  -- ${cmd}
+if [ -z "${SKIP_IK}" ]; then
+    ik
+fi
 
-# cleanup *run* artifacts (not perf measurements)
-rm -rf ResultsInverseDynamics/ err.log out.log
-popd
+if [ -z "${SKIP_FD}" ]; then
+    fd
+fi

@@ -1,0 +1,2 @@
+export PATH="${PATH}:$(readlink -f ~/Desktop/opensim-core/opensim-core-build/)"
+sudo bash -c 'echo "-1" > "/proc/sys/kernel/perf_event_paranoid"'

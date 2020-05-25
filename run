@@ -45,16 +45,27 @@ test_cases = [
         description="FD simulation from Ajay's collection",
         files=["passive_dynamic/*"],
         setup_file="setup_forward_tool.xml"),
+    TestCase(
+        name="passive_dynamic_noanalysis",
+        description="FD simulation from Ajay's collection",
+        files=["passive_dynamic_noanalysis/*"],
+        setup_file="setup_forward_tool.xml"),
 ]
 
 # The runtime context of a test. This class provides a test step with
 # access to runtime values (e.g. scratch dirs, what options the user
 # passed, etc.)
 class TestContext:
-    def __init__(self, *, scratch_dir, skip_valgrind=False, outdir=None):
+    def __init__(self,
+                 *,
+                 scratch_dir,
+                 skip_valgrind=False,
+                 outdir=None,
+                 perf_record_callstack=False):
         self.scratch_dir = scratch_dir
         self.skip_valgrind = skip_valgrind
         self.outdir = outdir
+        self.perf_record_callstack = perf_record_callstack
 
 def setup_scratch_dir(ctx, test_case):
     for path in test_case.files:
@@ -86,17 +97,23 @@ def run_valgrind(ctx, test_case):
     assert p.returncode == 0
 
     if ctx.outdir:
-        for outfile in glob.glob(os.path.join(ctx.scratch_dir, 'cachegrind*')):
+        for outfile in glob.glob(os.path.join(ctx.scratch_dir, 'callgrind*')):
             print(f"writing valgrind file '{outfile}' to '{ctx.outdir}'")
             shutil.copy(outfile, ctx.outdir)
 
 def run_perf(ctx, test_case):
+    if ctx.perf_record_callstack:
+        cg_arg = ["--call-graph", "dwarf"]
+    else:
+        cg_arg = []
+
     p = subprocess.run(
         args=[
             "perf",
             "record",
             "--freq",
             "8192",
+            *cg_arg,
             "--",
             *opensim_args(ctx, test_case),
         ],
@@ -150,7 +167,8 @@ def cmd_record(args):
             with tempfile.TemporaryDirectory() as tmpdir:
                 ctx = TestContext(scratch_dir=tmpdir,
                                   skip_valgrind=args.skip_valgrind,
-                                  outdir=args.output)
+                                  outdir=args.output,
+                                  perf_record_callstack=args.perf_record_callstack)
 
                 if ctx.outdir and not os.path.exists(ctx.outdir):
                     print(f"{ctx.outdir}: does not exist: creating")
@@ -184,6 +202,7 @@ def main():
     run_sp.add_argument('test_name')
     run_sp.add_argument('-o', '--output', help="Output directory for recorded traces (default: temporary directory)", default=None)
     run_sp.add_argument('--skip-valgrind', help="Do not record valgrind trace", action='store_true')
+    run_sp.add_argument('--perf-record-callstack', help="Record callstack when running perf", action='store_true')
     run_sp.set_defaults(func=cmd_record)
 
     ls_sp = subparsers.add_parser("ls", help="List available tests")

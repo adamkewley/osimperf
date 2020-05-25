@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-
-rm Gait2354_Simbody/callgrind.out*
-rm Gait2354_Simbody/perf.data

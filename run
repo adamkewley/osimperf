@@ -1,40 +1,201 @@
-#!/usr/bin/env bash
+#!/usr/bin/env python3
 
-valgrind_opts="--tool=callgrind --dump-instr=yes --cache-sim=yes --branch-sim=yes"
-perf_opts="--freq 8192"
+# OpenSim performance benchmarking runner
+#
+# This python script implements a command-line interface for running
+# OpenSim performance benchmarks. The main utility of this is to
+# automate and standardize the performance benchmarks so that it's
+# easy to aggregate statistics, add new metrics, etc. (rather than
+# having a manual approach, or a bunch of seperate scripts).
 
-function run_bench() {
-    cmd=$1
-    valgrind ${valgrind_opts} -- ${cmd}
-    perf record ${perf_opts} -- ${cmd}
-}
+import argparse
+import tempfile
+import glob
+import shutil
+import errno
+import os
+import subprocess
 
-function ik() {
-    pushd Gait2354_Simbody/
-    run_bench "opensim-cmd run-tool subject01_Setup_InverseDynamics.xml"
+# Represents a single test case in the suite. This benchmarking suite
+# contains a few tests that exercise different parts of OpenSim.
+class TestCase:
+    def __init__(self, *, name, description="", url="", files, setup_file):
+        self.name = name
+        self.description = description
+        self.url = url
+        self.files = files
+        self.setup_file = setup_file
 
-    # cleanup *run* artifacts (not perf measurements)
-    rm -rf ResultsInverseDynamics/ err.log out.log
-    popd
-}
+# List of test cases being exercised by this suite
+test_cases = [
+    TestCase(
+        name="Gait2354",
+        description="IK simulation from OpenSim tutorial",
+        url="https://simtk-confluence.stanford.edu/display/OpenSim/Tutorial+3+-+Scaling%2C+Inverse+Kinematics%2C+and+Inverse+Dynamics",
+        files=["Gait2354_Simbody/*"],
+        setup_file="subject01_Setup_InverseDynamics.xml"),
+    TestCase(
+        name="ToyDropLanding",
+        description="FD simulation from OpenSim tutorial",
+        url="https://simtk-confluence.stanford.edu/display/OpenSim/Simulation-Based+Design+to+Prevent+Ankle+Injuries",
+        files=["ToyDropLanding/*"],
+        setup_file="setup_forward_tool.xml"),
+    TestCase(
+        name="passive_dynamic",
+        description="FD simulation from Ajay's collection",
+        files=["passive_dynamic/*"],
+        setup_file="setup_forward_tool.xml"),
+]
 
-function fd() {
-    pushd ToyDropLanding/
-    run_bench "opensim-cmd run-tool setup_forward_tool.xml"
+# The runtime context of a test. This class provides a test step with
+# access to runtime values (e.g. scratch dirs, what options the user
+# passed, etc.)
+class TestContext:
+    def __init__(self, *, scratch_dir, skip_valgrind=False, outdir=None):
+        self.scratch_dir = scratch_dir
+        self.skip_valgrind = skip_valgrind
+        self.outdir = outdir
 
-    # cleanup *run* artifacts (not perf measurements)
-    rm -rf '\\forward' err.log out.log perf.data.old
-    popd
-}
+def setup_scratch_dir(ctx, test_case):
+    for path in test_case.files:
+        for entry in glob.glob(path):
+            print(f"copying {entry} to {ctx.scratch_dir}")
+            try:
+                shutil.copytree(entry, os.path.join(ctx.scratch_dir, os.path.basename(entry)))
+            except OSError as exc:
+                if exc.errno == errno.ENOTDIR:
+                    shutil.copy(entry, ctx.scratch_dir)
+                else:
+                    raise
 
-# This assumes the caller has set the PATH to contain the
-# `opensim-cmd` that should be measured as top-prio
-which opensim-cmd
+def opensim_args(ctx, test_case):
+    return ["opensim-cmd", "run-tool", test_case.setup_file]
 
-if [ -z "${SKIP_IK}" ]; then
-    ik
-fi
+def run_valgrind(ctx, test_case):
+    p = subprocess.run(
+        args=[
+            "valgrind",
+            "--tool=callgrind",
+            "--dump-instr=yes",
+            "--cache-sim=yes",
+            "--branch-sim=yes",
+            "--",
+            *opensim_args(ctx, test_case),
+        ],
+        cwd=ctx.scratch_dir)
+    assert p.returncode == 0
 
-if [ -z "${SKIP_FD}" ]; then
-    fd
-fi
+    if ctx.outdir:
+        for outfile in glob.glob(os.path.join(ctx.scratch_dir, 'cachegrind*')):
+            print(f"writing valgrind file '{outfile}' to '{ctx.outdir}'")
+            shutil.copy(outfile, ctx.outdir)
+
+def run_perf(ctx, test_case):
+    p = subprocess.run(
+        args=[
+            "perf",
+            "record",
+            "--freq",
+            "8192",
+            "--",
+            *opensim_args(ctx, test_case),
+        ],
+        cwd=ctx.scratch_dir)
+    assert p.returncode == 0
+
+    if ctx.outdir:
+        src = os.path.join(ctx.scratch_dir, 'perf.data')
+        dest = ctx.outdir
+        print(f"writing perf file '{src}' to '{dest}'")
+        shutil.copy(src, dest)
+
+def run_test_case(ctx, test_case):
+    setup_scratch_dir(ctx, test_case)
+    if not ctx.skip_valgrind:
+        run_valgrind(ctx, test_case)
+    run_perf(ctx, test_case)
+
+def stat_test_case(ctx, test_case):
+    setup_scratch_dir(ctx, test_case)
+    stat_path = os.path.join(ctx.scratch_dir, "perf.stats")
+    p = subprocess.run(
+        args=[
+            "perf",
+            "stat",
+            "--repeat",
+            "8",
+            "-o",
+            stat_path,
+            "--",
+            *opensim_args(ctx, test_case),
+        ],
+        cwd=ctx.scratch_dir)
+    assert p.returncode == 0
+
+    with open(stat_path, 'rt') as fd:
+        print(fd.read())
+
+    if ctx.outdir:
+        shutil.copy(stat_path, ctx.outdir)
+
+def cmd_ls(args):
+    for test_case in test_cases:
+        print(test_case.name)
+
+def cmd_record(args):
+    test_name = args.test_name
+
+    for test_case in test_cases:
+        if test_case.name == test_name:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                ctx = TestContext(scratch_dir=tmpdir,
+                                  skip_valgrind=args.skip_valgrind,
+                                  outdir=args.output)
+
+                if ctx.outdir and not os.path.exists(ctx.outdir):
+                    print(f"{ctx.outdir}: does not exist: creating")
+                    os.mkdir(ctx.outdir)
+                run_test_case(ctx, test_case)
+            return
+
+    raise RuntimeError(f"{test_name}: no test case found: try 'ls' to list all available cases")
+
+def cmd_stat(args):
+    test_name = args.test_name
+    for test_case in test_cases:
+        if test_case.name == test_name:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                ctx = TestContext(scratch_dir=tmpdir,
+                                  outdir=args.output)
+                if ctx.outdir and not os.path.exists(ctx.outdir):
+                    print(f"{ctx.outdir}: does not exist: creating")
+                    os.mkdir(ctx.outdir)
+                stat_test_case(ctx, test_case)
+            return
+
+    raise RuntimeError(f"{test_name}: no test case found: try 'ls' to list all available cases")
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="OpenSim perf benchmark runner")
+    subparsers = parser.add_subparsers(title="subcommands")
+
+    run_sp = subparsers.add_parser("record", help="Record detailed perf trace of a test")
+    run_sp.add_argument('test_name')
+    run_sp.add_argument('-o', '--output', help="Output directory for recorded traces (default: temporary directory)", default=None)
+    run_sp.add_argument('--skip-valgrind', help="Do not record valgrind trace", action='store_true')
+    run_sp.set_defaults(func=cmd_record)
+
+    ls_sp = subparsers.add_parser("ls", help="List available tests")
+    ls_sp.set_defaults(func=cmd_ls)
+
+    measure_sp = subparsers.add_parser("stat", help="Measure top-level stats of a test")
+    measure_sp.add_argument('test_name')
+    measure_sp.add_argument('-o', '--output', help="Output directory for recorded traces (default: temporary directory)", default=None)
+    measure_sp.set_defaults(func=cmd_stat)
+
+    args = parser.parse_args()
+    args.func(args)
+
+if __name__ == "__main__":
+    main()

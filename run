@@ -41,6 +41,12 @@ test_cases = [
         files=["ToyDropLanding/*"],
         setup_file="setup_forward_tool.xml"),
     TestCase(
+        name="ToyDropLanding_nomuscles",
+        description="FD simulation from OpenSim tutorial (with <ForceSet /> removed)",
+        url="https://simtk-confluence.stanford.edu/display/OpenSim/Simulation-Based+Design+to+Prevent+Ankle+Injuries",
+        files=["ToyDropLanding_nomuscles/*"],
+        setup_file="setup_forward_tool.xml"),
+    TestCase(
         name="passive_dynamic",
         description="FD simulation from Ajay's collection",
         files=["passive_dynamic/*"],
@@ -61,11 +67,13 @@ class TestContext:
                  scratch_dir,
                  skip_valgrind=False,
                  outdir=None,
-                 perf_record_callstack=False):
+                 perf_record_callstack=False,
+                 perf_stat_num_repeats=8):
         self.scratch_dir = scratch_dir
         self.skip_valgrind = skip_valgrind
         self.outdir = outdir
         self.perf_record_callstack = perf_record_callstack
+        self.perf_stat_num_repeats = perf_stat_num_repeats
 
 def setup_scratch_dir(ctx, test_case):
     for path in test_case.files:
@@ -140,7 +148,7 @@ def stat_test_case(ctx, test_case):
             "perf",
             "stat",
             "--repeat",
-            "8",
+            str(ctx.perf_stat_num_repeats),
             "-o",
             stat_path,
             "--",
@@ -184,7 +192,8 @@ def cmd_stat(args):
         if test_case.name == test_name:
             with tempfile.TemporaryDirectory() as tmpdir:
                 ctx = TestContext(scratch_dir=tmpdir,
-                                  outdir=args.output)
+                                  outdir=args.output,
+                                  perf_stat_num_repeats=args.repeats)
                 if ctx.outdir and not os.path.exists(ctx.outdir):
                     print(f"{ctx.outdir}: does not exist: creating")
                     os.mkdir(ctx.outdir)
@@ -211,6 +220,7 @@ def main():
     measure_sp = subparsers.add_parser("stat", help="Measure top-level stats of a test")
     measure_sp.add_argument('test_name')
     measure_sp.add_argument('-o', '--output', help="Output directory for recorded traces (default: temporary directory)", default=None)
+    measure_sp.add_argument('-r', '--repeats', help="Repeats per perf measurement", default=8)
     measure_sp.set_defaults(func=cmd_stat)
 
     args = parser.parse_args()

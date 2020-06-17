@@ -1,4 +1,0 @@
-export PATH="$(readlink -f ~/Desktop/opensim-master/opensim-core-install/bin):${PATH}"
-
-# enables running `perf stat` without having to `sudo` the opensim cmd
-sudo bash -c 'echo "-1" > "/proc/sys/kernel/perf_event_paranoid"'

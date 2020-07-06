@@ -207,7 +207,7 @@ def stat_test_case(ctx, test_case):
         shutil.copy(stat_path, ctx.outdir)
 
     # attempt to parse the output
-    with open(stat_file, 'rt') as fd:
+    with open(stat_path, 'rt') as fd:
         for line in fd:
             result = re.search(pattern, line)
             if result:

@@ -15,16 +15,19 @@ import shutil
 import errno
 import os
 import subprocess
+import re
+import sys
 
 # Represents a single test case in the suite. This benchmarking suite
 # contains a few tests that exercise different parts of OpenSim.
 class TestCase:
-    def __init__(self, *, name, description="", url="", files, setup_file):
+    def __init__(self, *, name, description="", url="", files, setup_file, libraries=[]):
         self.name = name
         self.description = description
         self.url = url
         self.files = files
         self.setup_file = setup_file
+        self.libraries = libraries
 
 # List of test cases being exercised by this suite
 test_cases = [
@@ -66,6 +69,12 @@ test_cases = [
         description="Model with muscle wrapping surfaces",
         files=["RajagopalModel/*"],
         setup_file="default_Setup_ForwardTool.xml"),
+    TestCase(
+        name="TestThoracoScapula",
+        description="From Ajay: TestThoracoScapula",
+        files=["TestThoracoScapula/*"],
+        setup_file="default_Setup_ForwardTool.xml",
+        libraries=["./libScapulothoracicJointPlugin40.so"]),
 ]
 
 # The runtime context of a test. This class provides a test step with
@@ -85,6 +94,13 @@ class TestContext:
         self.perf_record_callstack = perf_record_callstack
         self.perf_stat_num_repeats = perf_stat_num_repeats
 
+        if outdir and not os.path.exists(outdir):
+            print(f"{outdir}: does not exist: creating")
+            os.mkdir(outdir)
+
+        if int(perf_stat_num_repeats) < 2:
+            raise RuntimeError("number of repeats specified is too small. must be at least 2")
+
 def setup_scratch_dir(ctx, test_case):
     for path in test_case.files:
         for entry in glob.glob(path):
@@ -98,7 +114,12 @@ def setup_scratch_dir(ctx, test_case):
                     raise
 
 def opensim_args(ctx, test_case):
-    return ["opensim-cmd", "run-tool", test_case.setup_file]
+    args = ["opensim-cmd"]
+    for lib in test_case.libraries:
+        args += ["-L", lib]
+    args += ["run-tool", test_case.setup_file]
+
+    return args
 
 def run_valgrind(ctx, test_case):
     p = subprocess.run(
@@ -150,6 +171,16 @@ def run_test_case(ctx, test_case):
         run_valgrind(ctx, test_case)
     run_perf(ctx, test_case)
 
+# Stats collected from `perf` output
+class Stats:
+    def __init__(self, time_elapsed, time_elapsed_stderr, time_elapsed_pct_stderr):
+        self.time_elapsed = time_elapsed
+        self.time_elapsed_stderr = time_elapsed_stderr
+        self.time_elapsed_pct_stderr = time_elapsed_pct_stderr
+
+# pattern produced by 'perf stat'
+pattern = re.compile(r"(\d+\.\d+) \+- (\d+\.\d+) seconds time elapsed.+(\d+\.\d+)%")
+
 def stat_test_case(ctx, test_case):
     setup_scratch_dir(ctx, test_case)
     stat_path = os.path.join(ctx.scratch_dir, "perf.stats")
@@ -167,50 +198,163 @@ def stat_test_case(ctx, test_case):
         cwd=ctx.scratch_dir)
     assert p.returncode == 0
 
+    # print stat output to calling console
     with open(stat_path, 'rt') as fd:
         print(fd.read())
 
+    # copy output to user-defined output dir
     if ctx.outdir:
         shutil.copy(stat_path, ctx.outdir)
+
+    # attempt to parse the output
+    with open(stat_file, 'rt') as fd:
+        for line in fd:
+            result = re.search(pattern, line)
+            if result:
+                return Stats(
+                    time_elapsed=float(result.group(1)),
+                    time_elapsed_stderr=float(result.group(2)),
+                    time_elapsed_pct_stderr=float(result.group(3)))
+
+    raise RuntimeError(f"{stat_file}: could not parse output for expected pattern {pattern}")
+
+# Storage of a comparison between two stats
+class StoredComparison:
+    def __init__(self, test_case, stat_master, stat_branch):
+        self.test_case = test_case
+        self.stat_master = stat_master
+        self.stat_branch = stat_branch
+
+# Thin abstraction for collecting + printing output stats at runtime.
+# This exists because I plan on having a `CliReporter` (interactive)
+# and a `TableReporter` (collects inputs and aggregates into a nice
+# table).
+class Reporter:
+    def __init__(self, num_repeats, lhs_opensim, rhs_opensim):
+        print(f"lhs = {lhs_opensim}")
+        print(f"rhs = {rhs_opensim}")
+        print(f"repeats = {num_repeats}")
+        self.comparisons = []
+
+    def on_comparison(self, test_case, stat_master, stat_branch):
+        sc = StoredComparison(test_case, stat_master, stat_branch)
+        self.comparisons.append(sc)
+
+    def on_finish(self):
+        names = [sc.test_case for sc in self.comparisons]
+        master_elapseds = [sc.stat_master.time_elapsed for sc in self.comparisons]
+        master_stderrs = [sc.stat_master.time_elapsed_stderr for sc in self.comparisons]
+        branch_elapseds = [sc.stat_branch.time_elapsed for sc in self.comparisons]
+        branch_stderrs = [sc.stat_branch.time_elapsed_stderr for sc in self.comparisons]
+        speedups = list(map(lambda p: p[0]/p[1], zip(master_elapseds, branch_elapseds)))
+
+        to_2dp_str = lambda f: "%.2f" % f
+        master_strs = [to_2dp_str(v) for v in master_elapseds]
+        master_stderrs_strs = [to_2dp_str(v) for v in master_stderrs]
+        branch_strs = [to_2dp_str(v) for v in branch_elapseds]
+        branch_stderrs_strs = [to_2dp_str(v) for v in branch_stderrs]
+        speedup_strs = [to_2dp_str(v) for v in speedups]
+
+        cols = [
+            names,
+            master_strs,
+            master_stderrs_strs,
+            branch_strs,
+            branch_stderrs_strs,
+            speedup_strs,
+        ]
+        col_widths = [max(map(len, col)) for col in cols]
+
+        headers = [
+            "Test Name",
+            "lhs [secs]",
+            "σ [secs]",
+            "rhs [secs]",
+            "σ [secs]",
+            "Speedup",
+        ]
+
+        # hack: fixup col widths for headers
+        for i in range(0, len(col_widths)):
+            col_widths[i] = max(col_widths[i], len(headers[i]))
+
+        # print headers
+        header_line = "|"
+        for i in range(0, len(headers)):
+            col_width = col_widths[i]
+            header_line += ' '
+            header_line += headers[i].rjust(col_width)
+            header_line += ' |'
+        print(header_line)
+
+        # seperator
+        separator_line = "|"
+        for i in range(0, len(headers)):
+            col_width = col_widths[i]
+            separator_line += ' '
+            separator_line += col_width * '-'
+            separator_line += ' |'
+        print(separator_line)
+
+        # data rows
+        for rownum in range(0, len(self.comparisons)):
+            s = "|"
+            for colnum in range(0, len(cols)):
+                width = col_widths[colnum]
+                data = cols[colnum][rownum]
+                s += ' '
+                s += data.rjust(width)
+                s += ' |'
+            print(s)
+
+def get_testcase_by_name(test_name):
+    for test_case in test_cases:
+        if test_case.name == test_name:
+            return test_case
+
+    raise RuntimeError(f"{test_name}: no test case found: try 'ls' to list all available cases")
 
 def cmd_ls(args):
     for test_case in test_cases:
         print(test_case.name)
 
 def cmd_record(args):
-    test_name = args.test_name
-
-    for test_case in test_cases:
-        if test_case.name == test_name:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                ctx = TestContext(scratch_dir=tmpdir,
-                                  skip_valgrind=args.skip_valgrind,
-                                  outdir=args.output,
-                                  perf_record_callstack=args.perf_record_callstack)
-
-                if ctx.outdir and not os.path.exists(ctx.outdir):
-                    print(f"{ctx.outdir}: does not exist: creating")
-                    os.mkdir(ctx.outdir)
-                run_test_case(ctx, test_case)
-            return
-
-    raise RuntimeError(f"{test_name}: no test case found: try 'ls' to list all available cases")
+    test_case = get_testcase_by_name(args.test_name)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ctx = TestContext(scratch_dir=tmpdir,
+                          skip_valgrind=args.skip_valgrind,
+                          outdir=args.output,
+                          perf_record_callstack=args.perf_record_callstack)
+        run_test_case(ctx, test_case)
 
 def cmd_stat(args):
-    test_name = args.test_name
-    for test_case in test_cases:
-        if test_case.name == test_name:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                ctx = TestContext(scratch_dir=tmpdir,
-                                  outdir=args.output,
-                                  perf_stat_num_repeats=args.repeats)
-                if ctx.outdir and not os.path.exists(ctx.outdir):
-                    print(f"{ctx.outdir}: does not exist: creating")
-                    os.mkdir(ctx.outdir)
-                stat_test_case(ctx, test_case)
-            return
+    test_case = get_testcase_by_name(args.test_name)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ctx = TestContext(scratch_dir=tmpdir,
+                          outdir=args.output,
+                          perf_stat_num_repeats=args.repeats)
+        stat_test_case(ctx, test_case)
 
-    raise RuntimeError(f"{test_name}: no test case found: try 'ls' to list all available cases")
+def cmd_comparison(args):
+    repeats = int(args.repeats)
+    lhs_opensim = os.environ["OPENSIM_MASTER_INSTALL"]
+    rhs_opensim = os.environ["OPENSIM_BRANCH_INSTALL"]
+
+    reporter = Reporter(num_repeats=repeats,
+                        lhs_opensim=lhs_opensim,
+                        rhs_opensim=rhs_opensim)
+
+    for test_case in test_cases:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ctx = TestContext(scratch_dir=tmpdir,
+                              perf_stat_num_repeats=repeats)
+            stats_master = stat_test_case(test_case, ctx)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ctx = TestContext(scratch_dir=tmpdir,
+                              perf_stat_num_repeats=repeats)
+            stats_branch = stat_test_case(test_case, ctx)
+        reporter.on_comparison(test_case, stats_master, stats_branch)
+    reporter.on_finish()
 
 def main():
     parser = argparse.ArgumentParser(
@@ -233,8 +377,17 @@ def main():
     measure_sp.add_argument('-r', '--repeats', help="Repeats per perf measurement", default=8)
     measure_sp.set_defaults(func=cmd_stat)
 
+    comparison_sp = subparsers.add_parser("compare-all", help="compare two versions of opensim-cmd (defined using environment vars OPENSIM_MASTER_INSTALL and OPENSIM_BRANCH_INSTALL")
+    comparison_sp.add_argument('-r', '--repeats', help="Repeats per comparison", default=8)
+    comparison_sp.set_defaults(func=cmd_comparison)
+
     args = parser.parse_args()
-    args.func(args)
+    if hasattr(args, "func"):
+        args.func(args)
+        return 0
+    else:
+        parser.print_help(sys.stderr)
+        return -1
 
 if __name__ == "__main__":
     main()

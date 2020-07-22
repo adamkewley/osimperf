@@ -17,6 +17,7 @@ import os
 import subprocess
 import re
 import sys
+import time
 
 # Represents a single test case in the suite. This benchmarking suite
 # contains a few tests that exercise different parts of OpenSim.
@@ -85,14 +86,18 @@ class TestContext:
                  *,
                  scratch_dir,
                  skip_valgrind=False,
+                 skip_perf_record=False,
                  outdir=None,
                  perf_record_callstack=False,
-                 perf_stat_num_repeats=8):
+                 perf_stat_num_repeats=8,
+                 opensim_cmd='opensim-cmd'):
         self.scratch_dir = scratch_dir
         self.skip_valgrind = skip_valgrind
+        self.skip_perf_record = skip_perf_record
         self.outdir = outdir
         self.perf_record_callstack = perf_record_callstack
         self.perf_stat_num_repeats = perf_stat_num_repeats
+        self.opensim_cmd = opensim_cmd
 
         if outdir and not os.path.exists(outdir):
             print(f"{outdir}: does not exist: creating")
@@ -114,15 +119,18 @@ def setup_scratch_dir(ctx, test_case):
                     raise
 
 def opensim_args(ctx, test_case):
-    args = ["opensim-cmd"]
+    args = [ctx.opensim_cmd]
     for lib in test_case.libraries:
         args += ["-L", lib]
     args += ["run-tool", test_case.setup_file]
 
     return args
 
+def run_application(*, args, **kwargs):
+    subprocess.run(args=args, **kwargs)
+
 def run_valgrind(ctx, test_case):
-    p = subprocess.run(
+    p = run_application(
         args=[
             "valgrind",
             "--tool=callgrind",
@@ -146,7 +154,7 @@ def run_perf(ctx, test_case):
     else:
         cg_arg = []
 
-    p = subprocess.run(
+    p = run_application(
         args=[
             "perf",
             "record",
@@ -169,7 +177,8 @@ def run_test_case(ctx, test_case):
     setup_scratch_dir(ctx, test_case)
     if not ctx.skip_valgrind:
         run_valgrind(ctx, test_case)
-    run_perf(ctx, test_case)
+    if not ctx.skip_perf_record:
+        run_perf(ctx, test_case)
 
 # Stats collected from `perf` output
 class Stats:
@@ -178,45 +187,27 @@ class Stats:
         self.time_elapsed_stderr = time_elapsed_stderr
         self.time_elapsed_pct_stderr = time_elapsed_pct_stderr
 
-# pattern produced by 'perf stat'
-pattern = re.compile(r"(\d+\.\d+) \+- (\d+\.\d+) seconds time elapsed.+(\d+\.\d+)%")
-
 def stat_test_case(ctx, test_case):
     setup_scratch_dir(ctx, test_case)
     stat_path = os.path.join(ctx.scratch_dir, "perf.stats")
-    p = subprocess.run(
-        args=[
-            "perf",
-            "stat",
-            "--repeat",
-            str(ctx.perf_stat_num_repeats),
-            "-o",
-            stat_path,
-            "--",
-            *opensim_args(ctx, test_case),
-        ],
-        cwd=ctx.scratch_dir)
-    assert p.returncode == 0
+    durations = []
+    for i in range(0, int(ctx.perf_stat_num_repeats)):
+        start_time = time.time()
+        p = run_application(
+            args=opensim_args(ctx, test_case),
+            cwd=ctx.scratch_dir)
+        end_time = time.time()
+        duration = end_time - start_time
+        durations.append(duration)
+    duration_avg = sum(durations)/len(durations)
+    duration_stddev = sum(map(lambda dur: (dur - duration_avg)**2, durations))/(len(durations)-1)
+    pct_err = duration_stddev/duration_avg
+    print(f"{'%.6f' % duration_avg} +- {'%.6f' % duration_stddev} seconds time elapsed ( +- {'%.3f' % pct_err}% )")
 
-    # print stat output to calling console
-    with open(stat_path, 'rt') as fd:
-        print(fd.read())
-
-    # copy output to user-defined output dir
-    if ctx.outdir:
-        shutil.copy(stat_path, ctx.outdir)
-
-    # attempt to parse the output
-    with open(stat_path, 'rt') as fd:
-        for line in fd:
-            result = re.search(pattern, line)
-            if result:
-                return Stats(
-                    time_elapsed=float(result.group(1)),
-                    time_elapsed_stderr=float(result.group(2)),
-                    time_elapsed_pct_stderr=float(result.group(3)))
-
-    raise RuntimeError(f"{stat_file}: could not parse output for expected pattern {pattern}")
+    return Stats(
+            time_elapsed=duration_avg,
+            time_elapsed_stderr=duration_stddev
+            time_elapsed_pct_stderr=pct_err)
 
 # Storage of a comparison between two stats
 class StoredComparison:
@@ -323,6 +314,7 @@ def cmd_record(args):
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = TestContext(scratch_dir=tmpdir,
                           skip_valgrind=args.skip_valgrind,
+                          skip_perf_record=args.skip_perf_record,
                           outdir=args.output,
                           perf_record_callstack=args.perf_record_callstack)
         run_test_case(ctx, test_case)
@@ -337,8 +329,8 @@ def cmd_stat(args):
 
 def cmd_comparison(args):
     repeats = int(args.repeats)
-    lhs_opensim = os.environ["OPENSIM_MASTER_INSTALL"]
-    rhs_opensim = os.environ["OPENSIM_BRANCH_INSTALL"]
+    lhs_opensim = args.opensim_cmd_lhs
+    rhs_opensim = args.opensim_cmd_rhs
 
     reporter = Reporter(num_repeats=repeats,
                         lhs_opensim=lhs_opensim,
@@ -347,13 +339,15 @@ def cmd_comparison(args):
     for test_case in test_cases:
         with tempfile.TemporaryDirectory() as tmpdir:
             ctx = TestContext(scratch_dir=tmpdir,
-                              perf_stat_num_repeats=repeats)
-            stats_master = stat_test_case(test_case, ctx)
+                              perf_stat_num_repeats=repeats,
+                              opensim_cmd=lhs_opensim)
+            stats_master = stat_test_case(ctx, test_case)
         with tempfile.TemporaryDirectory() as tmpdir:
             ctx = TestContext(scratch_dir=tmpdir,
-                              perf_stat_num_repeats=repeats)
-            stats_branch = stat_test_case(test_case, ctx)
-        reporter.on_comparison(test_case, stats_master, stats_branch)
+                              perf_stat_num_repeats=repeats,
+                              opensim_cmd=rhs_opensim)
+            stats_branch = stat_test_case(ctx, test_case)
+        reporter.on_comparison(test_case.name, stats_master, stats_branch)
     reporter.on_finish()
 
 def main():
@@ -365,6 +359,7 @@ def main():
     run_sp.add_argument('test_name')
     run_sp.add_argument('-o', '--output', help="Output directory for recorded traces (default: temporary directory)", default=None)
     run_sp.add_argument('--skip-valgrind', help="Do not record valgrind trace", action='store_true')
+    run_sp.add_argument('--skip-perf-record', help="Do not record with 'perf record'", action='store_true')
     run_sp.add_argument('--perf-record-callstack', help="Record callstack when running perf", action='store_true')
     run_sp.set_defaults(func=cmd_record)
 
@@ -378,6 +373,8 @@ def main():
     measure_sp.set_defaults(func=cmd_stat)
 
     comparison_sp = subparsers.add_parser("compare-all", help="compare two versions of opensim-cmd (defined using environment vars OPENSIM_MASTER_INSTALL and OPENSIM_BRANCH_INSTALL")
+    comparison_sp.add_argument('opensim_cmd_lhs', help='opensim-cmd command to run (e.g. opensim-cmd, /some/path/to/opensim-cmd)')
+    comparison_sp.add_argument('opensim_cmd_rhs', help='opensim-cmd command to run (e.g. opensim-cmd, /some/other/path/to/opensim-cmd)')
     comparison_sp.add_argument('-r', '--repeats', help="Repeats per comparison", default=8)
     comparison_sp.set_defaults(func=cmd_comparison)
 

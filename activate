@@ -1,10 +1,12 @@
-export OPENSIM_MASTER_INSTALL="$(readlink -f ~/Desktop/opensim-master/opensim-core-install/bin)"
-export OPENSIM_BRANCH_INSTALL="$(readlink -f ~/Desktop/opensim-core/opensim-core-install/bin)"
+# this script should be 'source'd to activate various environment requirements
 
 alias activate-master='export PATH="${OPENSIM_MASTER_INSTALL}:${PATH}"'
 alias activate-branch='export PATH="${OPENSIM_BRANCH_INSTALL}:${PATH}"'
 
 activate-branch
-# enables running `perf stat` without having to `sudo` the opensim cmd
-sudo bash -c 'echo "-1" > "/proc/sys/kernel/perf_event_paranoid"'
+
+if [[ ! "$OSTYPE" == "darwin"* ]]; then
+	# enables running `perf stat` without having to `sudo` the opensim cmd
+	sudo bash -c 'echo "-1" > "/proc/sys/kernel/perf_event_paranoid"'
+fi
 

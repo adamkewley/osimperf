@@ -206,7 +206,7 @@ def stat_test_case(ctx, test_case):
 
     return Stats(
             time_elapsed=duration_avg,
-            time_elapsed_stderr=duration_stddev
+            time_elapsed_stderr=duration_stddev,
             time_elapsed_pct_stderr=pct_err)
 
 # Storage of a comparison between two stats

@@ -70,12 +70,12 @@ test_cases = [
         description="Model with muscle wrapping surfaces",
         files=["RajagopalModel/*"],
         setup_file="default_Setup_ForwardTool.xml"),
-    TestCase(
-        name="TestThoracoScapula",
-        description="From Ajay: TestThoracoScapula",
-        files=["TestThoracoScapula/*"],
-        setup_file="default_Setup_ForwardTool.xml",
-        libraries=["./libScapulothoracicJointPlugin40.so"]),
+#    TestCase(
+#        name="TestThoracoScapula",
+#        description="From Ajay: TestThoracoScapula",
+#        files=["TestThoracoScapula/*"],
+#        setup_file="default_Setup_ForwardTool.xml",
+#        libraries=["./libScapulothoracicJointPlugin40.so"]),
 ]
 
 # The runtime context of a test. This class provides a test step with
@@ -127,7 +127,7 @@ def opensim_args(ctx, test_case):
     return args
 
 def run_application(*, args, **kwargs):
-    subprocess.run(args=args, **kwargs)
+    return subprocess.run(args=args, **kwargs)
 
 def run_valgrind(ctx, test_case):
     p = run_application(

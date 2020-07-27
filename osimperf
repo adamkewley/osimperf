@@ -70,12 +70,11 @@ test_cases = [
         description="Model with muscle wrapping surfaces",
         files=["RajagopalModel/*"],
         setup_file="default_Setup_ForwardTool.xml"),
-#    TestCase(
+#   TestCase(
 #        name="TestThoracoScapula",
 #        description="From Ajay: TestThoracoScapula",
 #        files=["TestThoracoScapula/*"],
-#        setup_file="default_Setup_ForwardTool.xml",
-#        libraries=["./libScapulothoracicJointPlugin40.so"]),
+#        setup_file="default_Setup_ForwardTool.xml"),
 ]
 
 # The runtime context of a test. This class provides a test step with

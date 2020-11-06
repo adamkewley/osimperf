@@ -1,6 +1,6 @@
-# osim-perf
+# osimperf
 
-A benchmark suite for measuing OpenSim's overall simulation
+A benchmark suite for measuring OpenSim's overall simulation
 performance.
 
 This benchmark suite is used to measure OpenSim's *overall*
@@ -21,9 +21,11 @@ This benchmark suite is used to measure OpenSim's *overall*
 
 ## Usage
 
-Each test candidate (effectively, a model + simulation tool input)
-should be in a directory containing an `osimperf.conf` file. The
-top-level script (`osimperf`) globs for files matching this pattern.
+To define a test, create an `osimperf.conf` file in a
+subdirectory. See `ToyDropLanding/` in this repo as an example. The
+`osimperf` script globs all subdirectories in the current directory
+(or whatever directory is defined by `--tests`) with
+`**/osimperf.conf`.
 
 The top-level test driver, `osimperf`, contains a collection of
 subcommands that are useful in different contexts. See `osimperf
@@ -31,33 +33,33 @@ subcommands that are useful in different contexts. See `osimperf
 
 ```bash
 # list all test suites (e.g. ToyDropLanding)
-./osimperf ls
+osimperf ls
 
 # use a different dir when searching for tests and list that
-./osimperf --tests other-tests/ ls
+osimperf --tests other-tests/ ls
 
 # assuming `opensim-cmd` is on the PATH, take a basic time
 # measurement of a test suite
-./osimperf stat ToyDropLanding
+osimperf stat ToyDropLanding
 
 # as above, but with more detailed output and a different number
 # of repeats
-./osimperf --verbose stat ToyDropLanding --repeats 8
+osimperf --verbose stat ToyDropLanding --repeats 8
 
 # record a `valgrind` (callgrind) and `perf` profile of a test suite
-./osimperf record -o profile-results/ ToyDropLanding
+osimperf record -o profile-results/ ToyDropLanding
 
 # compare two opensim-cmd binaries against all test suites and emit
 # a markdown comparison table
-./osimperf compare-all /path/to/opensim-cmd /other/opensim-cmd
+osimperf compare-all /path/to/opensim-cmd /other/opensim-cmd
 
 # advanced: configure an analysis that exercises multiple opensim-cmd
 # binaries against all test suites, with repeats, in a random order
-./osimperf full-analysis-configure /a/opensim-cmd /b/opensim-cmd /c/opensim-cmd > tests-to-run
+osimperf full-analysis-configure /a/opensim-cmd /b/opensim-cmd /c/opensim-cmd > tests-to-run
 
 # advanced: execute a runfile produced by `full-analysis-configure`. If
 # applicable, resume from last location
-./osimperf full-analysis-run tests-to-run results
+osimperf full-analysis-run tests-to-run results
 ```
 
 
@@ -66,8 +68,9 @@ subcommands that are useful in different contexts. See `osimperf
 
 ### `osimperf record`
 
-Recording a profile of a particular commit of `opensim-cmd`, viewing
-the `valgrind --tool=callgrind` output in the `kcachegrind` GUI:
+`osimperf record` records a profile of a particular commit of
+`opensim-cmd`. This example then views the output of `valgrind
+--tool=callgrind` output in `kcachegrind`:
 
 ```bash
 PATH=branches/master/RelWithDebInfo-install/bin/:$PATH
@@ -81,7 +84,7 @@ cd out/ && kcachegrind
 
 ### `osimperf record` (multiple tests)
 
-Just use bash to record multiple test suites:
+Use bash to record multiple test suites:
 
 ```bash
 PATH=branches/master/RelWithDebInfo-install/bin/:$PATH
@@ -93,9 +96,10 @@ done
 
 ### `osimperf compare-all`
 
-Using `osimperf compare-all` to compare the top-level performance
-change of a PR to `opensim-core` (PR
-[here](https://github.com/opensim-org/opensim-core/pull/2837)):
+`osimperf compare-all` can be used to compare the top-level
+performance of two different `opensim-cmd` binaries. This example
+compares the top-level performance change introduced by a PR
+([here](https://github.com/opensim-org/opensim-core/pull/2837)):
 
 ```bash
 lhs=branches/master/RelWithDebInfo-install/bin/opensim-cmd
@@ -103,6 +107,8 @@ rhs=branches/perf-reduce-map-lookups/RelWithDebInfo-install/bin/opensim-cmd
 
 osimperf compare-all --repeats 32 $lhs $rhs
 ```
+
+The output table is a markdown table that can be pasted directly into GitHub:
 
 |                  Test Name | lhs [secs] | σ [secs] | rhs [secs] | σ [secs] | Speedup |
 | -------------------------- | ---------- | -------- | ---------- | -------- | ------- |

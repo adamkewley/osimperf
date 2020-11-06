@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 
-# OpenSim performance benchmarking runner
+# osimperf: performance benchmark runner script
 #
-# This python script implements a command-line interface for running
-# OpenSim performance benchmarks. The main utility of this is to
-# automate and standardize the performance benchmarks so that it's
-# easy to aggregate statistics, add new metrics, etc. (rather than
-# having a manual approach, or a bunch of seperate scripts).
+# this script implements a top-level CLI for running OpenSim
+# performance benchmarks. The main utility of this is to automate and
+# standardize the performance benchmarks so that it's easy to
+# aggregate statistics, add new metrics, etc. (rather than having a
+# manual approach, or a bunch of seperate scripts).
 
 import argparse
 import tempfile
@@ -18,9 +18,26 @@ import subprocess
 import re
 import sys
 import time
+import configparser
+import logging
+import random
 
-# Represents a single test case in the suite. This benchmarking suite
-# contains a few tests that exercise different parts of OpenSim.
+# global static log
+logging.basicConfig(level=logging.WARNING)
+log = logging.getLogger()
+
+
+# initialized app state
+class AppState:
+    def __init__(self, test_cases):
+        self.test_cases = test_cases
+
+# a single test case in the suite
+#
+# for this high-level benchmark, a "test case" is essentially an
+# OpenSim model (e.g. a muscular model of a human) + a tool
+# configuration file (e.g. a forward dynamic simulation configuration
+# file)
 class TestCase:
     def __init__(self, *, name, description="", url="", files, setup_file, libraries=[]):
         self.name = name
@@ -30,60 +47,49 @@ class TestCase:
         self.setup_file = setup_file
         self.libraries = libraries
 
-# List of test cases being exercised by this suite
-test_cases = [
-    TestCase(
-        name="Gait2354",
-        description="IK simulation from OpenSim tutorial",
-        url="https://simtk-confluence.stanford.edu/display/OpenSim/Tutorial+3+-+Scaling%2C+Inverse+Kinematics%2C+and+Inverse+Dynamics",
-        files=["Gait2354_Simbody/*"],
-        setup_file="subject01_Setup_InverseDynamics.xml"),
-    TestCase(
-        name="ToyDropLanding",
-        description="FD simulation from OpenSim tutorial",
-        url="https://simtk-confluence.stanford.edu/display/OpenSim/Simulation-Based+Design+to+Prevent+Ankle+Injuries",
-        files=["ToyDropLanding/*"],
-        setup_file="setup_forward_tool.xml"),
-    TestCase(
-        name="ToyDropLanding_nomuscles",
-        description="FD simulation from OpenSim tutorial (with <ForceSet /> removed)",
-        url="https://simtk-confluence.stanford.edu/display/OpenSim/Simulation-Based+Design+to+Prevent+Ankle+Injuries",
-        files=["ToyDropLanding_nomuscles/*"],
-        setup_file="setup_forward_tool.xml"),
-    TestCase(
-        name="passive_dynamic",
-        description="FD simulation from Ajay's collection",
-        files=["passive_dynamic/*"],
-        setup_file="setup_forward_tool.xml"),
-    TestCase(
-        name="passive_dynamic_noanalysis",
-        description="FD simulation from Ajay's collection",
-        files=["passive_dynamic_noanalysis/*"],
-        setup_file="setup_forward_tool.xml"),
-    TestCase(
-        name="Arm26",
-        description="Simulation of an arm bending slightly (/w muscle wrapping?)",
-        files=["Arm26/*"],
-        setup_file="arm26_Setup_Forward.xml"),
-    TestCase(
-        name="RajagopalModel",
-        description="Model with muscle wrapping surfaces",
-        files=["RajagopalModel/*"],
-        setup_file="default_Setup_ForwardTool.xml"),
-#   TestCase(
-#        name="TestThoracoScapula",
-#        description="From Ajay: TestThoracoScapula",
-#        files=["TestThoracoScapula/*"],
-#        setup_file="default_Setup_ForwardTool.xml"),
-]
+# loads a `TestCase` from an `osimperf.conf` file
+def __load_testcase_from_config(path):
+    log.debug("%s: loading test case", path)
+    cfg = configparser.ConfigParser(interpolation=None)
+    cfg.read(path)
 
-# The runtime context of a test. This class provides a test step with
-# access to runtime values (e.g. scratch dirs, what options the user
-# passed, etc.)
+    if cfg.has_section('files'):
+        f = cfg['files']
+        files = []
+        for entry in f:
+            files.append(f[entry])
+    else:
+        files = []
+
+    g = cfg['general']
+
+    return TestCase(
+        name=g['name'],
+        description=g.get('description', ''),
+        url=g.get('url', ''),
+        files=files,
+        setup_file=g['setup_file'])
+
+# loads all `osimperf.conf` files recursively found from current
+# working dir
+def __load_test_cases(d):
+    patt = os.path.join(d, "**", "osimperf.conf")
+    log.debug("loading all test cases via glob %s", patt)
+    tcs = [
+        __load_testcase_from_config(e)
+        for e in glob.glob(patt)
+    ]
+    log.debug("loaded %s test cases", len(tcs))
+    return tcs
+
+# The runtime context of a particular test. This class provides a test
+# step with access to runtime values (e.g. scratch dirs, what options
+# the user passed, etc.)
 class TestContext:
     def __init__(self,
                  *,
                  scratch_dir,
+                 test_case,
                  skip_valgrind=False,
                  skip_perf_record=False,
                  outdir=None,
@@ -99,23 +105,24 @@ class TestContext:
         self.opensim_cmd = opensim_cmd
 
         if outdir and not os.path.exists(outdir):
-            print(f"{outdir}: does not exist: creating")
+            log.debug("%s: does not exist: creating", outdir)
             os.mkdir(outdir)
 
         if int(perf_stat_num_repeats) < 2:
             raise RuntimeError("number of repeats specified is too small. must be at least 2")
 
-def setup_scratch_dir(ctx, test_case):
-    for path in test_case.files:
-        for entry in glob.glob(path):
-            print(f"copying {entry} to {ctx.scratch_dir}")
-            try:
-                shutil.copytree(entry, os.path.join(ctx.scratch_dir, os.path.basename(entry)))
-            except OSError as exc:
-                if exc.errno == errno.ENOTDIR:
-                    shutil.copy(entry, ctx.scratch_dir)
-                else:
-                    raise
+        log.debug("creating scratch directory")
+        for path in test_case.files:
+            for entry in glob.glob(path):
+                log.debug("copying %s to %s", entry, self.scratch_dir)
+                try:
+                    shutil.copytree(entry, os.path.join(self.scratch_dir, os.path.basename(entry)))
+                except OSError as exc:
+                    if exc.errno == errno.ENOTDIR:
+                        shutil.copy(entry, self.scratch_dir)
+                    else:
+                        raise
+        log.debug("created scratch directory")
 
 def opensim_args(ctx, test_case):
     args = [ctx.opensim_cmd]
@@ -125,11 +132,8 @@ def opensim_args(ctx, test_case):
 
     return args
 
-def run_application(*, args, **kwargs):
-    return subprocess.run(args=args, **kwargs)
-
 def run_valgrind(ctx, test_case):
-    p = run_application(
+    p = subprocess.run(
         args=[
             "valgrind",
             "--tool=callgrind",
@@ -144,7 +148,7 @@ def run_valgrind(ctx, test_case):
 
     if ctx.outdir:
         for outfile in glob.glob(os.path.join(ctx.scratch_dir, 'callgrind*')):
-            print(f"writing valgrind file '{outfile}' to '{ctx.outdir}'")
+            log.debug("writing valgrind file '%s' to '%s'", outfile, ctx.outdir)
             shutil.copy(outfile, ctx.outdir)
 
 def run_perf(ctx, test_case):
@@ -153,7 +157,7 @@ def run_perf(ctx, test_case):
     else:
         cg_arg = []
 
-    p = run_application(
+    p = subprocess.run(
         args=[
             "perf",
             "record",
@@ -169,11 +173,10 @@ def run_perf(ctx, test_case):
     if ctx.outdir:
         src = os.path.join(ctx.scratch_dir, 'perf.data')
         dest = ctx.outdir
-        print(f"writing perf file '{src}' to '{dest}'")
+        log.debug("writing perf file '%s' to '%s'", src, dest)
         shutil.copy(src, dest)
 
 def run_test_case(ctx, test_case):
-    setup_scratch_dir(ctx, test_case)
     if not ctx.skip_valgrind:
         run_valgrind(ctx, test_case)
     if not ctx.skip_perf_record:
@@ -186,22 +189,27 @@ class Stats:
         self.time_elapsed_stderr = time_elapsed_stderr
         self.time_elapsed_pct_stderr = time_elapsed_pct_stderr
 
+def __run_test_case(ctx, test_case):
+    start_time = time.time()
+    p = subprocess.run(
+        args=opensim_args(ctx, test_case),
+        cwd=ctx.scratch_dir,
+        stdout=None if log.isEnabledFor(logging.DEBUG) else subprocess.DEVNULL,
+        stderr=None if log.isEnabledFor(logging.DEBUG) else subprocess.DEVNULL)
+    end_time = time.time()
+    duration = end_time - start_time
+    return (p.returncode, duration)
+
 def stat_test_case(ctx, test_case):
-    setup_scratch_dir(ctx, test_case)
     stat_path = os.path.join(ctx.scratch_dir, "perf.stats")
     durations = []
     for i in range(0, int(ctx.perf_stat_num_repeats)):
-        start_time = time.time()
-        p = run_application(
-            args=opensim_args(ctx, test_case),
-            cwd=ctx.scratch_dir)
-        end_time = time.time()
-        duration = end_time - start_time
-        durations.append(duration)
+        returncode, dur = __run_test_case(ctx, test_case)
     duration_avg = sum(durations)/len(durations)
     duration_stddev = sum(map(lambda dur: (dur - duration_avg)**2, durations))/(len(durations)-1)
     pct_err = duration_stddev/duration_avg
-    print(f"{'%.6f' % duration_avg} +- {'%.6f' % duration_stddev} seconds time elapsed ( +- {'%.3f' % pct_err}% )")
+
+    print(f"{test_case.name}: {'%.6f' % duration_avg} +- {'%.6f' % duration_stddev} seconds time elapsed ( +- {'%.3f' % pct_err}% )")
 
     return Stats(
             time_elapsed=duration_avg,
@@ -297,36 +305,44 @@ class Reporter:
                 s += ' |'
             print(s)
 
-def get_testcase_by_name(test_name):
-    for test_case in test_cases:
+def get_testcase_by_name(st, test_name):
+    for test_case in st.test_cases:
         if test_case.name == test_name:
             return test_case
 
     raise RuntimeError(f"{test_name}: no test case found: try 'ls' to list all available cases")
 
-def cmd_ls(args):
-    for test_case in test_cases:
+
+# command: ls: list all available test cases
+def cmd_ls(st, args):
+    for test_case in st.test_cases:
         print(test_case.name)
 
-def cmd_record(args):
-    test_case = get_testcase_by_name(args.test_name)
+# command: record: record the performance profile of a test case
+def cmd_record(st, args):
+    test_case = get_testcase_by_name(st, args.test_name)
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = TestContext(scratch_dir=tmpdir,
+                          test_case=test_case,
                           skip_valgrind=args.skip_valgrind,
                           skip_perf_record=args.skip_perf_record,
                           outdir=args.output,
                           perf_record_callstack=args.perf_record_callstack)
         run_test_case(ctx, test_case)
 
-def cmd_stat(args):
+# command: stat: report top-level walltime measurement of a test case
+def cmd_stat(st, args):
     test_case = get_testcase_by_name(args.test_name)
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = TestContext(scratch_dir=tmpdir,
+                          test_case=test_case,
                           outdir=args.output,
                           perf_stat_num_repeats=args.repeats)
         stat_test_case(ctx, test_case)
 
-def cmd_comparison(args):
+# command: compare-all: compare two opensim executables for all test
+#                       cases and emit a markdown comparison table
+def cmd_comparison(st, args):
     repeats = int(args.repeats)
     lhs_opensim = args.opensim_cmd_lhs
     rhs_opensim = args.opensim_cmd_rhs
@@ -335,51 +351,211 @@ def cmd_comparison(args):
                         lhs_opensim=lhs_opensim,
                         rhs_opensim=rhs_opensim)
 
-    for test_case in test_cases:
+    for test_case in st.test_cases:
         with tempfile.TemporaryDirectory() as tmpdir:
             ctx = TestContext(scratch_dir=tmpdir,
+                              test_case=test_case,
                               perf_stat_num_repeats=repeats,
                               opensim_cmd=lhs_opensim)
             stats_master = stat_test_case(ctx, test_case)
         with tempfile.TemporaryDirectory() as tmpdir:
             ctx = TestContext(scratch_dir=tmpdir,
+                              test_case=test_case,
                               perf_stat_num_repeats=repeats,
                               opensim_cmd=rhs_opensim)
             stats_branch = stat_test_case(ctx, test_case)
         reporter.on_comparison(test_case.name, stats_master, stats_branch)
     reporter.on_finish()
 
+def __permute_analyses(exes, test_cases, num_repeats):
+    for exe in exes:
+        for tc in test_cases:
+            for i in range(0, int(num_repeats)):
+                yield (exe, tc.name, i)
+
+# command: full-analysis-configure
+#
+# configure a full analysis experiment. Effectively, generates a
+# runfile that can be fed into `full-analysis-run`. The reason this is
+# a two-step process is so that `full-analysis-run` can be continued
+# if interrupted (it doesn't hold the run file internally, so it can
+# be saved)
+def cmd_full_analysis_configure(st, args):
+    analyses = list(__permute_analyses(args.executables, st.test_cases, args.repeats))
+    random.shuffle(analyses)
+
+    test_id = 0
+    for exe, tc, repeat in analyses:
+        print(f"{test_id}:{exe}:{tc}:{repeat}")
+        test_id += 1
+
+def cmd_full_analysis_run(st, args):
+    # this is inefficient, but simple. Shoot me *after* you find that
+    # reading everything into memory, or doing two passes, is causing
+    # issues
+
+    analyses_to_run = []
+    with open(args.runfile, 'rt') as fd:
+        for line in fd:
+            test_id, exe, tc, repeat = line.strip().split(':')
+            analyses_to_run.append((test_id, exe, tc, repeat))
+
+    # validation check: if the output file exists, verify that all
+    # data in it matches expectations and note the last complete
+    # analysis
+    last_complete_analysis = 0
+    if os.path.exists(args.outfile):
+        with open(args.outfile, 'rt') as fd:
+            for line in fd:
+                expected = analyses_to_run[last_complete_analysis]
+                test_id, exe, tc, repeat, _ = line.strip().split(':')
+                got = (test_id, exe, tc, repeat)
+
+                if expected != got:
+                    raise RuntimeError(f"{args.outfile}: existing entry in output file does not match the input file: are you trying to continue an analysis with the wrong input file? {expected} {got}")
+
+                last_complete_analysis += 1
+
+    # all input analyses read and the resumption point (if any) has
+    # been established: time to record output
+    with open(args.outfile, 'at') as fd:
+        for tc in analyses_to_run[last_complete_analysis:]:
+            test_id, exe, tc, repeat = tc
+            test_case = get_testcase_by_name(st, tc)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                ctx = TestContext(scratch_dir=tmpdir,
+                                  test_case=test_case,
+                                  perf_stat_num_repeats=2,
+                                  opensim_cmd=exe)
+                returncode, dur = __run_test_case(ctx, test_case)
+            if returncode != 0:
+                output = f"{test_id}:{exe}:{tc}:{repeat}:FAIL"
+            else:
+                output = f"{test_id}:{exe}:{tc}:{repeat}:{dur}"
+            log.debug(f"RESULT: {output}")
+            fd.write(f"{output}\n")
+            fd.flush()
+
 def main():
     parser = argparse.ArgumentParser(
         description="OpenSim perf benchmark runner")
+    parser.add_argument("-v", "--verbose", help="Enable verbose output", action="store_true")
+    parser.add_argument("-t", "--tests", help="Search for tests in this dir (default: current dir)", default=os.curdir)
     subparsers = parser.add_subparsers(title="subcommands")
 
-    run_sp = subparsers.add_parser("record", help="Record detailed perf trace of a test")
-    run_sp.add_argument('test_name')
-    run_sp.add_argument('-o', '--output', help="Output directory for recorded traces (default: temporary directory)", default=None)
-    run_sp.add_argument('--skip-valgrind', help="Do not record valgrind trace", action='store_true')
-    run_sp.add_argument('--skip-perf-record', help="Do not record with 'perf record'", action='store_true')
-    run_sp.add_argument('--perf-record-callstack', help="Record callstack when running perf", action='store_true')
-    run_sp.set_defaults(func=cmd_record)
+    # record
+    if True:
+        run_sp = subparsers.add_parser("record", help="Record detailed perf trace of a test")
+        run_sp.add_argument(
+            'test_name'
+        )
+        run_sp.add_argument(
+            '-o',
+            '--output',
+            help="Output directory for recorded traces (default: temporary directory)",
+            default=None
+        )
+        run_sp.add_argument(
+            '--skip-valgrind',
+            help="Do not record valgrind trace",
+            action='store_true'
+        )
+        run_sp.add_argument(
+            '--skip-perf-record',
+            help="Do not record with 'perf record'",
+            action='store_true'
+        )
+        run_sp.add_argument(
+            '--perf-record-callstack',
+            help="Record callstack when running perf",
+            action='store_true'
+        )
+        run_sp.set_defaults(func=cmd_record)
 
-    ls_sp = subparsers.add_parser("ls", help="List available tests")
-    ls_sp.set_defaults(func=cmd_ls)
+    # ls
+    if True:
+        ls_sp = subparsers.add_parser("ls", help="List available tests")
+        ls_sp.set_defaults(func=cmd_ls)
 
-    measure_sp = subparsers.add_parser("stat", help="Measure top-level stats of a test")
-    measure_sp.add_argument('test_name')
-    measure_sp.add_argument('-o', '--output', help="Output directory for recorded traces (default: temporary directory)", default=None)
-    measure_sp.add_argument('-r', '--repeats', help="Repeats per perf measurement", default=8)
-    measure_sp.set_defaults(func=cmd_stat)
+    # stat
+    if True:
+        measure_sp = subparsers.add_parser("stat", help="Measure top-level stats of a test")
+        measure_sp.add_argument(
+            'test_name'
+        )
+        measure_sp.add_argument(
+            '-o',
+            '--output',
+            help="Output directory for recorded traces (default: temporary directory)",
+            default=None
+        )
+        measure_sp.add_argument(
+            '-r',
+            '--repeats',
+            help="Repeats per perf measurement",
+            default=8
+        )
+        measure_sp.set_defaults(func=cmd_stat)
 
-    comparison_sp = subparsers.add_parser("compare-all", help="compare two versions of opensim-cmd (defined using environment vars OPENSIM_MASTER_INSTALL and OPENSIM_BRANCH_INSTALL")
-    comparison_sp.add_argument('opensim_cmd_lhs', help='opensim-cmd command to run (e.g. opensim-cmd, /some/path/to/opensim-cmd)')
-    comparison_sp.add_argument('opensim_cmd_rhs', help='opensim-cmd command to run (e.g. opensim-cmd, /some/other/path/to/opensim-cmd)')
-    comparison_sp.add_argument('-r', '--repeats', help="Repeats per comparison", default=8)
-    comparison_sp.set_defaults(func=cmd_comparison)
+    # compare-all
+    if True:
+        comparison_sp = subparsers.add_parser("compare-all", help="compare two versions of opensim-cmd (defined using environment vars OPENSIM_MASTER_INSTALL and OPENSIM_BRANCH_INSTALL")
+        comparison_sp.add_argument(
+            'opensim_cmd_lhs',
+            help='opensim-cmd command to run (e.g. opensim-cmd, /some/path/to/opensim-cmd)'
+        )
+        comparison_sp.add_argument(
+            'opensim_cmd_rhs',
+            help='opensim-cmd command to run (e.g. opensim-cmd, /some/other/path/to/opensim-cmd)'
+        )
+        comparison_sp.add_argument(
+            '-r',
+            '--repeats',
+            help="Repeats per comparison",
+            default=8
+        )
+        comparison_sp.set_defaults(func=cmd_comparison)
 
+    # full-analysis-configure
+    if True:
+        fac_sp = subparsers.add_parser("full-analysis-configure", help="generate a randomized set of stat measurements to run on the provided executable")
+        fac_sp.add_argument(
+            'executables',
+            help='full paths to opensim-cmd executables that should be tested',
+            nargs='+')
+        fac_sp.add_argument(
+            '-r',
+            '--repeats',
+            help='Repeats per comparison',
+            default=8)
+        fac_sp.set_defaults(func=cmd_full_analysis_configure)
+
+    if True:
+        far_sp = subparsers.add_parser(
+            "full-analysis-run",
+            help="run a full analysis file generated by full-analysis-configure"
+        )
+        far_sp.add_argument(
+            'runfile',
+            help='runfile, as generated by full-analysis-configure'
+        )
+        far_sp.add_argument(
+            'outfile',
+            help='output result file: note, this process currently **continues** if the file already exists, rather than overwriting'
+        )
+        far_sp.set_defaults(func=cmd_full_analysis_run)
+
+    # parse args
     args = parser.parse_args()
+
+    # configure logging (should be done *before* anything else)
+    if args.verbose:
+        log.setLevel(logging.DEBUG)
+
+    st = AppState(test_cases=__load_test_cases(args.tests))
+
     if hasattr(args, "func"):
-        args.func(args)
+        args.func(st, args)
         return 0
     else:
         parser.print_help(sys.stderr)

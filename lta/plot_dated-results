@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+
+# plot processed (that is, dated) results from `full-analysis-run`
+#
+# per-line input format is:
+#
+# $id~$commit~$commit_date~$suite~$repeat_num~$wall_time
+
+import pandas
+import matplotlib
+import matplotlib.pyplot as plt
+import argparse
+import datetime
+import matplotlib.dates as mdates
+
+p = argparse.ArgumentParser(description="plot processed results from 'full-analysis-run'")
+p.add_argument("data", help="delimited file of $id~$commit~$commit_date~$suite~$repeat_num~$wall_time")
+
+args = p.parse_args()
+
+cols = ["id", "commit", "commit_date", "suite", "repeat_num", "wall_time"]
+df = pandas.read_csv(args.data, sep="~", header=None, names=cols)
+df.commit_date = pandas.to_datetime(df.commit_date, format="%Y-%m-%d %H:%M:%S%z")
+
+for suite, df_s in df.groupby("suite"):
+    flierprops = dict(
+        marker='.',
+        markerfacecolor='black',
+        markersize=2,
+        linestyle='none',
+        markeredgecolor='black')
+    ax = df_s.boxplot(
+        column='wall_time',
+        by='commit_date',
+        grid=False,
+        rot=45,
+        fontsize=8,
+        notch=True,
+        meanline=True,
+        sym='.',flierprops=flierprops)
+    plt.suptitle(suite)
+    plt.title('')
+    plt.xlabel('Commit date')
+    plt.ylabel('Wall time [secs]')
+    plt.show()

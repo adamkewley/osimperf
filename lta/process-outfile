@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+
+import argparse
+import re
+import subprocess
+import datetime
+
+def get_author_date(commit):
+    p = subprocess.run(f"git --git-dir=/media/adam/b52e403a-28d8-494d-ae31-ecc7f80de2d7/opensim-core/.git show --format='%ai' --quiet {commit}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    assert p.returncode == 0
+    date_str = p.stdout.decode(encoding='utf-8').strip()
+    d = datetime.datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S %z")
+    
+    return d.astimezone(datetime.timezone.utc)
+
+p = argparse.ArgumentParser(description="process outfile from ./osimperf full-analysis-run")
+p.add_argument("outfile", help="the outfile to process")
+args = p.parse_args()
+
+patt = re.compile("([^/]+)/bin/opensim-cmd")
+
+with open(args.outfile, "rt") as fd:
+    lineno = 1
+    for line in fd:
+        n, path, suite, repeat, dur = line.split(":")
+        m = patt.search(path)
+        if not m:
+            raise RuntimeError(f"{lineno}: path cannot be parsed")
+        commit = m.group(1)
+        d = get_author_date(commit)
+        print(f"{n}~{commit}~{d}~{suite}~{repeat}~{dur}".strip())
+        lineno += 1

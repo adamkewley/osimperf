@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+# quick script for sampling 1/4 commits made to opensim-core from 2017
+# onwards
+#
+# this script creates a file in `commits-to-do/` named
+# `commits-to-do/<commit>`, which is used by the downstream makefile
+# to figure out which commits it needs to build + install
+
+latest_commit=55f5cbee7fe7ddde4e51a73b26fe5ce7877ffa73
+first_commit_2017=8db56d7d1738c817860327679e855c0b67dd27d7
+
+mkdir -p ../commits-to-do
+
+for h in $(git log --first-parent --format="%H" $latest_commit..$first_commit_2017 | awk 'NR%4==0 {print}'); do
+    touch ../commits-to-do/$h;
+done

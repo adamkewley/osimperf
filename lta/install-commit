@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+
+set -xeuo pipefail
+
+commit=$1
+checkout_dir="${PWD}/builds/${commit}"
+install_dir="${PWD}/installs/${commit}"
+num_workers=4
+
+# perform checkout if necessary
+if [[ ! -d "${checkout_dir}" ]]; then
+   git clone opensim-core/ "${checkout_dir}"
+   cd "${checkout_dir}"
+   git checkout ${commit}
+   cd -
+fi
+
+# build opensim's dependencies
+mkdir -p "${checkout_dir}/dependencies-build"
+cd "${checkout_dir}/dependencies-build"
+cmake -DCMAKE_INSTALL_PREFIX=../dependencies-install \
+      -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      ../dependencies/
+make -j${num_workers}
+cd -
+
+# build + install opensim
+mkdir -p "${checkout_dir}/build"
+mkdir -p "${install_dir}"
+cd "${checkout_dir}/build"
+cmake -DCMAKE_INSTALL_PREFIX=${install_dir} \
+      -DOPENSIM_DEPENDENCIES_DIR=../dependencies-install \
+      -DBUILD_JAVA_WRAPPING=OFF \
+      -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      ..
+make -j${num_workers} install
+
+# also, archive other useful build information. This is useful for
+# long-term crash investigation analysis ;) (e.g. if these binaries
+# hang around for a long time and we're wondering whether compiler
+# versions changed at some point)
+cc --version > "${install_dir}/c-compiler"
+c++ --version > "${install_dir}/c++-compiler"
+git show -s > "${install_dir}/git-show"
+cp CMakeCache.txt "${install_dir}"
+cd -
+
+# remove build intermediates: they're massive
+rm -rf "${checkout_dir}"

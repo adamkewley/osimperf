@@ -134,3 +134,45 @@ Sources for some models:
 - ToyDroplanding [here](https://simtk-confluence.stanford.edu/display/OpenSim/Simulation-Based+Design+to+Prevent+Ankle+Injuries)
 
 - Direct from researchers (e.g. Ajay Seth)
+
+
+## Measurement of Long-Term Performance Trends in OpenSim
+
+This repo also contains the scripts used to measure long-term
+performance trends in OpenSim. `osimperf` was used to record the
+actual measurements. The extra scripts were necessary to sample +
+build historical commits from
+[opensim-core](https://github.com/opensim-org/opensim-core). Main
+points:
+
+- One in every four commits to
+  [opensim-core](https://github.com/opensim-org/opensim-core)/`master`
+  from 2017 onwards were sampled repository using
+  [this](lta/1_sample-commits) script
+
+- A top-level `Makefile` ([link](lta/Makefile)) was used to
+  build + install each commit the same way ([build script](lta/install-commit)).
+  Parameters of interest:
+
+  - `cmake` version 3.13.4
+  - `g++` version `Debian 8.3.0-6`
+  - `gcc` version `Debian 8.3.0-6`
+  - `RelWithDebInfo` build type (effectively, `-O3 -g`)
+
+- This built ~120 installs of `opensim-core`. The `osimperf`
+  `full-analysis-configure` command was used to generate a runfile
+  that:
+
+  - Exercises all executables against the `ToyDropLanding`,
+    `passive_dynamic`, and `RajagopalModel` test suites
+
+    - These were chosen because they have performance issues. The
+      other test suites are inverse kinematic simulations (fast) or
+      very basic models (also fast). The chosen simulations are
+      forward dynamic simulations (slow) of anatomically-correct
+      humans (also slow).
+
+  - Performs 16 repeat measurements for each test suite
+
+  - Randomly mixes all repeats together, to help remove measurement
+    noise from system events.

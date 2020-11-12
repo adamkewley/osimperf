@@ -12,9 +12,11 @@ import matplotlib.pyplot as plt
 import argparse
 import datetime
 import matplotlib.dates as mdates
+import os
 
 p = argparse.ArgumentParser(description="plot processed results from 'full-analysis-run'")
 p.add_argument("data", help="delimited file of $id~$commit~$commit_date~$suite~$repeat_num~$wall_time")
+p.add_argument("-o", "--outdir", help="save plots to specified dir (default: show, rather than save)")
 
 args = p.parse_args()
 
@@ -23,23 +25,47 @@ df = pandas.read_csv(args.data, sep="~", header=None, names=cols)
 df.commit_date = pandas.to_datetime(df.commit_date, format="%Y-%m-%d %H:%M:%S%z")
 
 for suite, df_s in df.groupby("suite"):
+    
     flierprops = dict(
         marker='.',
         markerfacecolor='black',
         markersize=2,
         linestyle='none',
         markeredgecolor='black')
-    ax = df_s.boxplot(
-        column='wall_time',
-        by='commit_date',
-        grid=False,
-        rot=45,
-        fontsize=8,
-        notch=True,
-        meanline=True,
-        sym='.',flierprops=flierprops)
+    ax = df_s.plot.scatter(
+        x="commit_date",
+        y="wall_time",
+        s=1,
+        c='black')
+    plt.axvline(
+        x=datetime.datetime.strptime("2020-05-15 00:00:00 +0000", "%Y-%m-%d %H:%M:%S %z"),
+        label="adam",
+        ymin=0.1,
+        ymax=0.5,
+        color='black',
+        ls='--',
+        lw=0.8
+    )
+#    plt.annotate(
+#        "Started perf tuning",
+#        (datetime.datetime.strptime("2020-05-15 00:00:00 +0000", "%Y-%m-%d %H:%M:%S %z"), 0.5),
+#        xycoords=('data', 'figure fraction'))
+#        column='wall_time',
+#        by='commit_date',
+#        grid=False,
+#        rot=90,
+#        fontsize=8,
+#        notch=True,
+#        meanline=True,
+#        sym='.',)
     plt.suptitle(suite)
     plt.title('')
     plt.xlabel('Commit date')
     plt.ylabel('Wall time [secs]')
-    plt.show()
+    if args.outdir:
+        plt.gcf().set_size_inches(12, 8)
+        path = os.path.join(args.outdir, suite)
+        plt.savefig(fname=path, dpi=300)
+    else:
+        plt.show()
+    plt.close()

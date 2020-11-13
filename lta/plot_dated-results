@@ -63,7 +63,7 @@ for suite, df_s in df.groupby("suite"):
     plt.xlabel('Commit date')
     plt.ylabel('Wall time [secs]')
     if args.outdir:
-        plt.gcf().set_size_inches(12, 8)
+        plt.gcf().set_size_inches(6, 4)
         path = os.path.join(args.outdir, suite)
         plt.savefig(fname=path, dpi=300)
     else:

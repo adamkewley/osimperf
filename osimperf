@@ -205,6 +205,7 @@ def stat_test_case(ctx, test_case):
     durations = []
     for i in range(0, int(ctx.perf_stat_num_repeats)):
         returncode, dur = __run_test_case(ctx, test_case)
+        durations += [dur]
     duration_avg = sum(durations)/len(durations)
     duration_stddev = sum(map(lambda dur: (dur - duration_avg)**2, durations))/(len(durations)-1)
     pct_err = duration_stddev/duration_avg

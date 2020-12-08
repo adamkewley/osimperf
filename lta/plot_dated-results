@@ -23,9 +23,10 @@ args = p.parse_args()
 cols = ["id", "commit", "commit_date", "suite", "repeat_num", "wall_time"]
 df = pandas.read_csv(args.data, sep="~", header=None, names=cols)
 df.commit_date = pandas.to_datetime(df.commit_date, format="%Y-%m-%d %H:%M:%S%z")
+start = pandas.to_datetime('2019-01-01 01:00:00+00:00', format="%Y-%m-%d %H:%M:%S%z")
+df = df[df.commit_date > start]
 
-for suite, df_s in df.groupby("suite"):
-    
+for suite, df_s in df.groupby("suite"):    
     flierprops = dict(
         marker='.',
         markerfacecolor='black',
@@ -38,34 +39,28 @@ for suite, df_s in df.groupby("suite"):
         s=1,
         c='black')
     plt.axvline(
+        # date we started working on perf
         x=datetime.datetime.strptime("2020-05-15 00:00:00 +0000", "%Y-%m-%d %H:%M:%S %z"),
-        label="adam",
+        label="started working on perf",
         ymin=0.1,
         ymax=0.5,
         color='black',
         ls='--',
         lw=0.8
     )
-#    plt.annotate(
-#        "Started perf tuning",
-#        (datetime.datetime.strptime("2020-05-15 00:00:00 +0000", "%Y-%m-%d %H:%M:%S %z"), 0.5),
-#        xycoords=('data', 'figure fraction'))
-#        column='wall_time',
-#        by='commit_date',
-#        grid=False,
-#        rot=90,
-#        fontsize=8,
-#        notch=True,
-#        meanline=True,
-#        sym='.',)
     plt.suptitle(suite)
     plt.title('')
     plt.xlabel('Commit date')
     plt.ylabel('Wall time [secs]')
+
+    # x ticks are quarterly (ish)
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    
     if args.outdir:
         plt.gcf().set_size_inches(6, 4)
         path = os.path.join(args.outdir, suite)
-        plt.savefig(fname=path, dpi=300)
+        plt.savefig(fname=path + '.eps', dpi=300, format='eps')
+        plt.savefig(fname=path, dpi=300, format='png')
     else:
         plt.show()
     plt.close()

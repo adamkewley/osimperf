@@ -333,7 +333,7 @@ def cmd_record(st, args):
 
 # command: stat: report top-level walltime measurement of a test case
 def cmd_stat(st, args):
-    test_case = get_testcase_by_name(args.test_name)
+    test_case = get_testcase_by_name(st, args.test_name)
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = TestContext(scratch_dir=tmpdir,
                           test_case=test_case,
